@@ -33,11 +33,11 @@ from stable_baselines3.common.torch_layers import (
 from stable_baselines3.common.type_aliases import Schedule
 from stable_baselines3.common.utils import get_device, is_vectorized_observation, obs_as_tensor
 
-from stable_baselines3.common.policies import ActorCriticPolicy
+from stable_baselines3.common.policies import ActorCriticPolicy, MultiInputActorCriticPolicy
 
-from stable_baselines3.ppo.mm_mlp_extractor import MultiModalMlpExtractor
+# from stable_baselines3.ppo.mm_mlp_extractor import MultiModalMlpExtractor
 
-class MultiModalActorCriticPolicy(ActorCriticPolicy):
+class MultiModalActorCriticPolicy(MultiInputActorCriticPolicy):
     """
     Policy class for **multi-modal** actor-critic algorithms (has both policy and value prediction).
     Used multi-modal PPO and the likes. Learns a **set** of policies by extending PPO to handle
@@ -84,100 +84,31 @@ class MultiModalActorCriticPolicy(ActorCriticPolicy):
         full_std: bool = True,
         use_expln: bool = False,
         squash_output: bool = False,
-        features_extractor_class: Type[BaseFeaturesExtractor] = FlattenExtractor,
+        features_extractor_class: Type[BaseFeaturesExtractor] = CombinedExtractor,
         features_extractor_kwargs: Optional[Dict[str, Any]] = None,
         share_features_extractor: bool = True,
         normalize_images: bool = True,
         optimizer_class: Type[th.optim.Optimizer] = th.optim.Adam,
         optimizer_kwargs: Optional[Dict[str, Any]] = None,
-        num_latent_modes: int = 1,
     ):
-
-        self.num_latent_modes = num_latent_modes
-
-        if optimizer_kwargs is None:
-            optimizer_kwargs = {}
-            # Small values to avoid NaN in Adam optimizer
-            if optimizer_class == th.optim.Adam:
-                optimizer_kwargs["eps"] = 1e-5
-
         super().__init__(
             observation_space,
             action_space,
+            lr_schedule,
+            net_arch,
+            activation_fn,
+            ortho_init,
+            use_sde,
+            log_std_init,
+            full_std,
+            use_expln,
+            squash_output,
             features_extractor_class,
             features_extractor_kwargs,
-            optimizer_class=optimizer_class,
-            optimizer_kwargs=optimizer_kwargs,
-            squash_output=squash_output,
-            normalize_images=normalize_images,
-        )
-
-        if isinstance(net_arch, list) and len(net_arch) > 0 and isinstance(net_arch[0], dict):
-            warnings.warn(
-                (
-                    "As shared layers in the mlp_extractor are removed since SB3 v1.8.0, "
-                    "you should now pass directly a dictionary and not a list "
-                    "(net_arch=dict(pi=..., vf=...) instead of net_arch=[dict(pi=..., vf=...)])"
-                ),
-            )
-            net_arch = net_arch[0]
-
-        # Default network architecture, from stable-baselines
-        if net_arch is None:
-            if features_extractor_class == NatureCNN:
-                net_arch = []
-            else:
-                net_arch = dict(pi=[64, 64], vf=[64, 64])
-
-        self.net_arch = net_arch
-        self.activation_fn = activation_fn
-        self.ortho_init = ortho_init
-
-        self.share_features_extractor = share_features_extractor
-        self.features_extractor = self.make_features_extractor()
-        self.features_dim = self.features_extractor.features_dim
-        if self.share_features_extractor:
-            self.pi_features_extractor = self.features_extractor
-            self.vf_features_extractor = self.features_extractor
-        else:
-            self.pi_features_extractor = self.features_extractor
-            self.vf_features_extractor = self.make_features_extractor()
-
-        self.log_std_init = log_std_init
-        dist_kwargs = None
-
-        assert not (squash_output and not use_sde), "squash_output=True is only available when using gSDE (use_sde=True)"
-        # Keyword arguments for gSDE distribution
-        if use_sde:
-            dist_kwargs = {
-                "full_std": full_std,
-                "squash_output": squash_output,
-                "use_expln": use_expln,
-                "learn_features": False,
-            }
-
-        self.use_sde = use_sde
-        self.dist_kwargs = dist_kwargs
-
-        # Action distribution
-        self.action_dist = make_proba_distribution(action_space, use_sde=use_sde, dist_kwargs=dist_kwargs)
-
-        self._build(lr_schedule)
-
-    def _build_mlp_extractor(self) -> None:
-        """
-        Create the policy and value networks.
-        Part of the layers can be shared.
-        """
-        # Note: If net_arch is None and some features extractor is used,
-        #       net_arch here is an empty list and mlp_extractor does not
-        #       really contain any layers (acts like an identity module).
-        self.mlp_extractor = MultiModalMlpExtractor(
-            self.num_latent_modes,
-            self.features_dim,
-            net_arch=self.net_arch,
-            activation_fn=self.activation_fn,
-            device=self.device,
+            share_features_extractor,
+            normalize_images,
+            optimizer_class,
+            optimizer_kwargs,
         )
 
     def forward(self, obs_dict: dict, deterministic: bool = False) -> Tuple[th.Tensor, th.Tensor, th.Tensor]:
@@ -188,26 +119,31 @@ class MultiModalActorCriticPolicy(ActorCriticPolicy):
         :param deterministic: Whether to sample or use deterministic actions
         :return: action, value and log probability of the action
         """
-        obs = obs_dict["obs"]
+        obs_unpacked = obs_dict["obs"]
         mode = obs_dict["mode"]
+        mode_long = mode.argmax(-1).item()
 
         # Preprocess the observation if needed
-        features = self.extract_features(obs)
+        features = self.extract_features(obs_dict)
 
         # Emit outputs (advantage, logits)
-        pi_features, vf_features = features
-        latent_pi = self.mlp_extractor.forward_actor(pi_features)
-        latent_vf = self.mlp_extractor.forward_critic(vf_features)
-
-        # Take the mode
-        latent_pi = latent_pi[mode]
-        latent_vf = latent_vf[mode]
+        latent_pi = self.mlp_extractor.forward_actor(features)
+        latent_vf = self.mlp_extractor.forward_critic(features)
 
         # Evaluate the values for the given observations
         values = self.value_net(latent_vf)
         distribution = self._get_action_dist_from_latent(latent_pi)
+        marginal_distribution_loc = th.stack((distribution.distribution.mean[:, mode_long],
+                                                 distribution.distribution.mean[:, -1]), -1)
+
+        marginal_distribution_scale = th.stack((distribution.distribution.scale[:, mode_long],
+                                                 distribution.distribution.scale[:, -1]), -1)
+        marginal_distribution = DiagGaussianDistribution(
+            marginal_distribution_loc.shape[-1]
+        ).proba_distribution(marginal_distribution_loc, marginal_distribution_scale.log())
         actions = distribution.get_actions(deterministic=deterministic)
-        log_prob = distribution.log_prob(actions)
+        marginal_action = th.stack((actions[:, mode_long], actions[:, -1]), -1)
+        log_prob = marginal_distribution.log_prob(marginal_action)
         actions = actions.reshape((-1, *self.action_space.shape))
         return actions, values, log_prob
 

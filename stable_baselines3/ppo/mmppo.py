@@ -13,6 +13,8 @@ from stable_baselines3.common.type_aliases import GymEnv, MaybeCallback, Schedul
 from stable_baselines3.common.utils import explained_variance, get_schedule_fn
 from stable_baselines3.ppo.ppo import PPO
 
+from stable_baselines3.ppo.mm_actor_critic_policy import MultiModalActorCriticPolicy
+
 SelfPPO = TypeVar("SelfPPO", bound="PPO")
 
 
@@ -73,7 +75,7 @@ class MultiModalPPO(PPO):
     """
 
     policy_aliases: ClassVar[Dict[str, Type[BasePolicy]]] = {
-        "MultiModalPolicy": MultiInputActorCriticPolicy,
+        "MultiModalPolicy": MultiModalActorCriticPolicy,
     }
 
     def __init__(
