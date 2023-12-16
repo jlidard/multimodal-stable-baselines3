@@ -121,7 +121,7 @@ class MultiModalActorCriticPolicy(MultiInputActorCriticPolicy):
         """
         obs_unpacked = obs_dict["obs"]
         mode = obs_dict["mode"]
-        mode_long = mode.argmax(-1).item()
+        mode_long = mode.argmax(dim=-1)
 
         # Preprocess the observation if needed
         features = self.extract_features(obs_dict)
@@ -133,16 +133,16 @@ class MultiModalActorCriticPolicy(MultiInputActorCriticPolicy):
         # Evaluate the values for the given observations
         values = self.value_net(latent_vf)
         distribution = self._get_action_dist_from_latent(latent_pi)
-        marginal_distribution_loc = th.stack((distribution.distribution.mean[:, mode_long],
-                                                 distribution.distribution.mean[:, -1]), -1)
+        marginal_distribution_loc = th.cat((th.gather(distribution.distribution.mean, -1, mode_long[:, None]),
+                                                 distribution.distribution.mean[:, -1:]), -1)
 
-        marginal_distribution_scale = th.stack((distribution.distribution.scale[:, mode_long],
-                                                 distribution.distribution.scale[:, -1]), -1)
+        marginal_distribution_scale = th.cat((th.gather(distribution.distribution.scale, -1, mode_long[:, None]),
+                                                 distribution.distribution.scale[:, -1:]), -1)
         marginal_distribution = DiagGaussianDistribution(
             marginal_distribution_loc.shape[-1]
         ).proba_distribution(marginal_distribution_loc, marginal_distribution_scale.log())
         actions = distribution.get_actions(deterministic=deterministic)
-        marginal_action = th.stack((actions[:, mode_long], actions[:, -1]), -1)
+        marginal_action = th.cat((th.gather(actions, -1, mode_long[:, None]), actions[:, -1:]), -1)
         log_prob = marginal_distribution.log_prob(marginal_action)
         actions = actions.reshape((-1, *self.action_space.shape))
         return actions, values, log_prob
