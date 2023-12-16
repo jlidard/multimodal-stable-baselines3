@@ -122,6 +122,7 @@ class MultiModalActorCriticPolicy(MultiInputActorCriticPolicy):
         obs_unpacked = obs_dict["obs"]
         mode = obs_dict["mode"]
         mode_long = mode.argmax(dim=-1)
+        batch_size, num_intent = mode.shape
 
         # Preprocess the observation if needed
         features = self.extract_features(obs_dict)
@@ -133,17 +134,21 @@ class MultiModalActorCriticPolicy(MultiInputActorCriticPolicy):
         # Evaluate the values for the given observations
         values = self.value_net(latent_vf)
         distribution = self._get_action_dist_from_latent(latent_pi)
-        marginal_distribution_loc = th.cat((th.gather(distribution.distribution.mean, -1, mode_long[:, None]),
-                                                 distribution.distribution.mean[:, -1:]), -1)
-
-        marginal_distribution_scale = th.cat((th.gather(distribution.distribution.scale, -1, mode_long[:, None]),
-                                                 distribution.distribution.scale[:, -1:]), -1)
-        marginal_distribution = DiagGaussianDistribution(
-            marginal_distribution_loc.shape[-1]
-        ).proba_distribution(marginal_distribution_loc, marginal_distribution_scale.log())
+        # marginal_distribution_loc = th.cat((th.gather(distribution.distribution.mean, -1, mode_long[:, None]),
+        #                                          distribution.distribution.mean[:, -1:]), -1)
+        #
+        # marginal_distribution_scale = th.cat((th.gather(distribution.distribution.scale, -1, mode_long[:, None]),
+        #                                          distribution.distribution.scale[:, -1:]), -1)
+        # marginal_distribution = DiagGaussianDistribution(
+        #     marginal_distribution_loc.shape[-1]
+        # ).proba_distribution(marginal_distribution_loc, marginal_distribution_scale.log())
+        # actions = th.zeros((batch_size, num_intent+1))
+        # samples = marginal_distribution.get_actions(deterministic=deterministic)
+        # actions = actions.scatter(-1,  mode_long[:, None], samples[:, 0:1])
+        # actions[:, -1] = samples[:, -1]
+        # marginal_action = th.cat((th.gather(actions, -1, mode_long[:, None]), actions[:, -1:]), -1)
         actions = distribution.get_actions(deterministic=deterministic)
-        marginal_action = th.cat((th.gather(actions, -1, mode_long[:, None]), actions[:, -1:]), -1)
-        log_prob = marginal_distribution.log_prob(marginal_action)
+        log_prob = distribution.log_prob(actions)
         actions = actions.reshape((-1, *self.action_space.shape))
         return actions, values, log_prob
 
