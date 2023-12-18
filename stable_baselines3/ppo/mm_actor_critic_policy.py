@@ -124,11 +124,14 @@ class MultiModalActorCriticPolicy(MultiInputActorCriticPolicy):
         mode_long = mode.argmax(dim=-1)
         batch_size, num_intent = mode.shape
 
+        obs_dict_actor = {"obs": obs, "mode": 0*mode}
+
         # Preprocess the observation if needed
         features = self.extract_features(obs_dict)
+        features_actor = self.extract_features(obs_dict_actor)
 
         # Emit outputs (advantage, logits)
-        latent_pi = self.mlp_extractor.forward_actor(features)
+        latent_pi = self.mlp_extractor.forward_actor(features_actor)
         latent_vf = self.mlp_extractor.forward_critic(features)
 
         # Evaluate the values for the given observations
